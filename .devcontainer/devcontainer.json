@@ -1,0 +1,14 @@
+{
+  "name": "Pintos Development",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "extensions": [
+    "ms-vscode.cpptools",
+    "ms-vscode.makefile-tools"
+  ],
+  "postCreateCommand": "sudo apt update && sudo apt install -y qemu gcc gdb make"
+}
