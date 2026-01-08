@@ -1,6 +1,7 @@
 # Base image
 FROM ubuntu:22.04
 
+
 # Install dependencies
 RUN apt update && apt install -y \
     build-essential \
@@ -11,6 +12,12 @@ RUN apt update && apt install -y \
     sudo \
     vim \
     && apt clean
+
+COPY ../pintos/src/utils/pintos /usr/local/bin/pintos
+RUN chmod +x /usr/local/bin/pintos
+
+COPY ../pintos/src/utils/Pintos.pm /usr/local/bin/Pintos.pm
+RUN chmod +x /usr/local/bin/Pintos.pm
 
 # Set up a user for development
 ARG USERNAME=vscode
