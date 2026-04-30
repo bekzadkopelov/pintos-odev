@@ -3,6 +3,8 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
   "settings": {
     "terminal.integrated.defaultProfile.linux": "bash"
   },
@@ -10,5 +12,5 @@
     "ms-vscode.cpptools",
     "ms-vscode.makefile-tools"
   ],
-  "postCreateCommand": "sudo apt update && sudo apt install -y qemu gcc gdb make"
+  "postCreateCommand": "cd /workspace/pintos/src/utils && make && sudo cp pintos Pintos.pm /usr/local/bin/ && cd /workspace/pintos/src/threads && make"
 }
