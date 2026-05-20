@@ -1,0 +1,548 @@
+---- GRUP ----
+
+>> Grup üyelerinizin adlarını ve e-posta adreslerini doldurun.
+
+Bekzad Kopelov <2020280100@ogr.deu.edu.tr>
+
+---- ÖN HAZIRLIKLAR ----
+
+>> Teslimatınızla ilgili herhangi bir ön hazırlık yorumunuz varsa lütfen burada belirtin.
+
+Proje tek kişi olarak teslim edilmektedir. Üç bölüm sırasıyla
+Alarm Clock, Priority Scheduling ve Advanced Scheduler (4.4BSD MLFQS)
+olarak tamamlanmıştır; tüm `tests/threads` testleri (27/27) `--qemu` ile
+PASS sonucunu vermektedir.
+
+>> Pintos dokümantasyonu, ders kitabı, ders notları dışında, teslimatınızı hazırlarken başvurduğunuz çevrimdışı veya çevrimiçi kaynakları belirtiniz.
+
+- Stanford CS140 Pintos resmi referans kılavuzu (Project 1: Threads bölümü)
+  ve "Reference Guide" — `list`, senkronizasyon ve kesme bağlamı için.
+- 4.4BSD scheduler için Pintos belgesindeki sabit nokta aritmetiği eki
+  (Appendix B.6 / B.7) — `fixed_point.h` makrolarının türetilmesi.
+
+
+                 ALARM SAATİ
+                 ===========
+
+---- VERİ YAPILARI ----
+
+>> A1: Her yeni veya değiştirilen `struct` veya `struct` üyesi, global veya statik değişken, `typedef` veya enumerasyonun beyanını buraya kopyalayın. Her birinin amacını 25 kelime veya daha az bir şekilde tanımlayın.
+
+`threads/thread.h` — `struct thread` içine eklenenler:
+
+```c
+struct list_elem sleepelem;          /* Uyuyan iş parçacıkları listesi için
+                                        liste elemanı. */
+int64_t remaining_time_to_wake_up;   /* Uyanmaya kalan tick sayısı; her
+                                        timer kesmesinde 1 azaltılır,
+                                        sıfırlandığında thread unblock edilir. */
+```
+
+`threads/thread.c` — yeni statik global:
+
+```c
+static struct list sleeping_list;    /* Hâlâ uyumakta olan BLOCKED durumdaki
+                                        iş parçacıklarının listesi. */
+```
+
+---- ALGORİTMALAR ----
+
+>> A2: timer_sleep() fonksiyonuna yapılan bir çağrıda neler olduğunu, zamanlayıcı kesme işleyicisinin etkilerini kısaca açıklayın.
+
+`timer_sleep(ticks)` çağrıldığında:
+
+1. `ticks <= 0` ise hemen geri döner (busy waiting yok, geçersiz argüman
+   sessizce yok sayılır).
+2. Kesmeler `intr_disable()` ile kapatılır.
+3. `thread_set_sleeping(ticks)` çağrılır: çağıran iş parçacığının
+   `remaining_time_to_wake_up` alanı `ticks` olarak yazılır, thread
+   `sleeping_list`'in arkasına eklenir ve `thread_block()` ile bloklanır.
+   `thread_block()` `schedule()` çağırır, bu yüzden CPU başka bir thread'e
+   verilir; busy waiting yapılmaz.
+4. Bloktan dönüldüğünde `timer_sleep` kesmeleri yeniden açar ve geri döner.
+
+Her timer kesmesinde `timer_interrupt` → `thread_tick()` sıralı şekilde
+`sleeping_list`'i dolaşır, her uyuyan thread'in
+`remaining_time_to_wake_up` değerini 1 azaltır. Sayaç 0'a indiğinde
+`thread_unblock()` çağrılarak thread `ready_list`'e (öncelik sırasıyla)
+geri konur ve `sleeping_list`'ten çıkarılır.
+
+>> A3: Zamanlayıcı kesme işleyicisi içinde harcanan süreyi minimize etmek için hangi adımlar atılmaktadır?
+
+- Uyuyan thread'ler, mutlak bir uyanma zamanı yerine **kalan tick sayısı**
+  ile tutuluyor; her tikte sadece tek bir `--` ve karşılaştırma yapılıyor.
+- Listenin sıralı tutulması yerine yalnızca **doğrusal taranıp** sayacı 0'a
+  düşenler çıkarılıyor; iterasyon sırasında bir sonraki elemanı `temp`
+  değişkeniyle önceden alıp `list_remove` yaptığımız için liste
+  bütünlüğü kaybolmadan tek geçişte tarama tamamlanıyor.
+- Heap (`malloc`/`palloc`) tahsisi yok; uyku metaverisi `struct thread`
+  içinde gömülü tutuluyor.
+- Uyandırılan thread doğrudan `thread_unblock` ile `ready_list`'e
+  konuyor; kesme bağlamında ek `thread_yield`/`schedule` çağrılmıyor —
+  `thread_tick` zaten dilim doluyorsa `intr_yield_on_return()` ile
+  geri-dönüşte planlama yapılmasını sağlıyor.
+
+---- SENKRONİZASYON ----
+
+>> A4: Birden fazla iş parçacığı aynı anda timer_sleep() fonksiyonunu çağırdığında yarış koşulları nasıl engellenir?
+
+`timer_sleep()` `sleeping_list`'i değiştirmeden önce `intr_disable()`
+ile kesmeleri kapatır. Pintos tek CPU üzerinde çalıştığı için, kesmeler
+kapalıyken başka bir kernel thread çalışamaz ve preemption olamaz; bu
+yüzden iki thread aynı anda `sleeping_list`'e ekleme yapamaz. Liste
+modifikasyonu ve `thread_block()` atomik bir kritik bölge içinde
+gerçekleşir.
+
+>> A5: timer_sleep() fonksiyonu çağrıldığında bir zamanlayıcı kesmesi meydana gelirse yarış koşulları nasıl engellenir?
+
+Aynı `intr_disable()` çağrısı timer kesmesinin de devreye girmesini
+engeller — kritik bölge boyunca `timer_interrupt` çalışamaz, dolayısıyla
+liste yarı modifiye edilmiş bir durumdayken `thread_tick` tarafından
+ziyaret edilemez. Thread bloklandıktan sonra `schedule()` yeni thread'e
+geçtiğinde kesmeler tekrar açılır; bu noktada iş parçacığı zaten
+`sleeping_list`'te tutarlı bir biçimde duruyordur.
+
+---- GEREKÇE ----
+
+>> A6: Bu tasarımı neden seçtiniz? Diğer düşündüğünüz tasarımlara kıyasla hangi açılardan daha üstün olduğunu düşünüyorsunuz?
+
+Düşünülen alternatifler:
+
+1. **Mutlak uyanma zamanı + sıralı liste**: Her timer tikinde sadece
+   listenin başına bakmak yeterli olur (O(1) "uyanan var mı?" testi). Ama
+   ekleme noktasını bulmak `list_insert_ordered` ile O(n); ayrıca taşma
+   riski oluşur ve karşılaştırmalar 64-bit yapılır.
+2. **Saklı kalan tick sayısı + sıralı olmayan liste (seçilen yol)**: Her
+   tikte tüm uyuyanlar için O(n) güncelleme yapılır, ancak her güncelleme
+   bir `--` ve dal komutundan ibarettir ve "ne zaman uyanır?" soruları
+   ek aritmetik gerektirmez.
+3. **Semaforla bekleme**: Her thread için `sema_init` + `sema_down`;
+   `timer_interrupt`'ta uyananları `sema_up` ile uyandırma. İşler ama
+   ek sema struct'ı, ek liste ve ek kesme-bağlamı `sema_up` (öncelik
+   karşılaştırması için `try_thread_yield`) maliyeti getirir.
+
+Pintos timer 100 Hz çalışır ve `sleeping_list` çoğunlukla küçüktür;
+basitliği ve `struct thread`'a sadece iki üye ekleyerek heap tahsisi
+gerektirmemesi nedeniyle 2. yaklaşım tercih edildi. Kesmeyi devre dışı
+bırakma tek noktada (`timer_sleep`) ve mümkün olan en kısa bölgede
+yapılıyor.
+
+
+             ÖNCELİKLE PLANLAMA
+             ===================
+
+---- VERİ YAPILARI ----
+
+>> B1: Her yeni veya değiştirilen `struct` veya `struct` üyesi, global veya statik değişken, `typedef` veya enumerasyonun beyanını buraya kopyalayın. Her birinin amacını 25 kelime veya daha az bir şekilde tanımlayın.
+
+`threads/thread.h` — `struct thread` içine eklenenler:
+
+```c
+int real_priority;            /* Bağıştan bağımsız taban öncelik;
+                                 thread_set_priority bunu yazar. */
+struct list locks_held;       /* Bu thread'in tuttuğu kilitlerin listesi;
+                                 etkili öncelik bunlardan türetilir. */
+struct lock *current_lock;    /* Thread şu anda hangi kilit üzerinde
+                                 bekliyor; iç içe bağışta zincir takibi
+                                 için kullanılır. NULL = beklemiyor. */
+```
+
+`threads/synch.h` — `struct lock` içine eklenenler:
+
+```c
+struct list_elem elem;        /* Bir thread'in LOCKS HELD listesine takılmak
+                                 için liste elemanı. */
+int max_priority;             /* Bu kilidi bekleyen thread'lerin en yüksek
+                                 önceliği; bağış miktarı bu değerdir. */
+```
+
+`threads/synch.c` — `struct semaphore_elem` içine eklenen:
+
+```c
+int priority;                 /* cond_wait sırasında çağıran thread'in
+                                 önceliği; condvar'da öncelik sırasını
+                                 sağlamak için kullanılır. */
+```
+
+>> B2: Öncelik bağışını izlemek için kullanılan veri yapısını açıklayın. Bir iç içe bağışı ASCII sanatı ile diyagramlayın. (Alternatif olarak, bir .png dosyası gönderin.)
+
+Veri yapısı iki yönlü bir grafiktir:
+
+- Her **thread** `current_lock` ile beklediği kilide, `locks_held`
+  ile sahip olduğu kilitlere işaret eder.
+- Her **lock** `holder` ile sahibine, `max_priority` ile kendisini
+  bekleyen en öncelikli thread'in önceliğine işaret eder.
+
+Bir thread'in **etkili önceliği** (`thread.priority`),
+`thread_update_priority()` ile şöyle hesaplanır:
+
+```
+priority = max( real_priority,
+                max over l in locks_held of l.max_priority )
+```
+
+Bir bağış `lock_acquire`'da `thread.current_lock` zinciri takip
+edilerek (sahip → sahibin beklediği kilit → o kilidin sahibi → ...)
+yukarı doğru yayılır. Bir bağışın geri alınması `lock_release`'de
+`locks_held`'den kilidi çıkararak ve `thread_update_priority`'yi
+yeniden çağırarak yapılır.
+
+İç içe bağış örneği — L (low, pri=10), M (med, pri=20), H (high, pri=30):
+
+```
+Başlangıç:
+  L --(holds)--> L1      M --(holds)--> L2      H (boşta)
+  L.priority=10          M.priority=20          H.priority=30
+
+t1: M, L1'i istiyor (L tutuyor) → M bloklanır.
+  L1.max_priority = 20
+  L.priority = max(10, 20) = 20
+
+  +---+  current_lock   +-----+
+  | M |---------------->| L1  |
+  +---+                 +-----+
+                          | holder
+                          v
+                        +---+   locks_held
+                        | L |---------> L1
+                        +---+
+
+t2: H, L2'yi istiyor (M tutuyor) → H bloklanır. Zincir takibi başlar.
+  L2.max_priority = 30  ; M.priority = max(20, 30) = 30
+  L2'nin sahibi M; M.current_lock = L1 → zincir devam eder
+  L1.max_priority = max(20, 30) = 30 ; L.priority = max(10, 30) = 30
+
+  +---+ current_lock  +-----+
+  | H |-------------->| L2  |
+  +---+               +-----+
+                        | holder
+                        v
+  +---+ current_lock  +-----+   locks_held
+  | M |-------------->| L1  |<---------- M
+  +---+               +-----+
+                        | holder
+                        v
+                      +---+   locks_held
+                      | L |----------> L1
+                      +---+
+                      priority=30 (bağış zinciri sayesinde)
+
+t3: L, L1'i release eder.
+  L'nin locks_held: L1 çıkarılır → L.priority = real_priority = 10
+  L1.holder = NULL; sema_up → M ready_list'e konulur (priority=30)
+  try_thread_yield → L preempt edilir, M çalışır.
+
+t4: M, L2'yi release eder.
+  M.locks_held: L2 çıkarılır → M.priority = real_priority = 20
+  H çalışır.
+```
+
+---- ALGORİTMALAR ----
+
+>> B3: Bir kilit, semafor veya koşul değişkeni için bekleyen en yüksek öncelikli iş parçacığının ilk önce uyanmasını nasıl sağlarsınız?
+
+Üç ayrı yaklaşım kullanıldı (her primitif için bağlam farklı):
+
+- **Semafor / kilit (`sema_up`)**: `sema->waiters` sıralı tutulmuyor
+  (push_front ile O(1) ekleme); `sema_up` zamanı geldiğinde
+  `sema_get_max_priority_thread` içinde `list_max(waiters,
+  compare_threads_by_priority)` ile O(n) tarama yapılıp en yüksek
+  öncelikli thread seçiliyor, `list_remove` + `thread_unblock` ile
+  uyandırılıyor. Donation sebebiyle waiters içindeki bir thread'in
+  önceliği değişebildiği için ekleme anındaki sırayı korumak doğru
+  cevabı garanti etmez; bu yüzden seçim **anlık** yapılıyor.
+
+- **Koşul değişkeni (`cond_signal`)**: Her bekleyen,
+  `struct semaphore_elem` içinde anlık önceliğini (`priority`)
+  saklıyor ve `list_insert_ordered(compare_semaphore_elem_by_priority)`
+  ile sıralı eklenir. `cond_signal` `list_pop_back` ile en yüksek
+  önceliği alır. Condvar wait'i sırasında bekleyen tek başına olduğu
+  için bağıştan etkilenmez; donmuş öncelik yeterlidir.
+
+- **Hazır kuyruğu**: `ready_list` `list_insert_ordered` ile sıralı
+  tutuluyor (`compare_threads_by_priority` `<=` döndürüyor); pop her
+  zaman `list_pop_back` ile en yüksek önceliği alıyor. Bir thread'in
+  önceliği değişirse `thread_ready_rearrange` ile kuyruktaki yeri
+  güncelleniyor.
+
+>> B4: lock_acquire() fonksiyonu bir öncelik bağışı oluşturduğunda olaylar sırasını açıklayın. İç içe bağış nasıl işlenir?
+
+`lock_acquire(L)` çağıran thread `T_cur`, `L.holder = T_h` (boş değil)
+ise:
+
+1. Kesmeler kapatılır; `T_cur->current_lock = L` yazılır.
+2. mlfqs **kapalıysa** zincir yayılımı başlar:
+   ```
+   current_priority = T_cur.priority
+   temp_lock   = L
+   temp_holder = L.holder
+   while temp_lock.max_priority < current_priority:
+       temp_lock.max_priority = current_priority
+       thread_update_priority(temp_holder)
+       if temp_holder.status == THREAD_READY:
+           thread_ready_rearrange(temp_holder)
+       temp_lock = temp_holder.current_lock
+       if temp_lock == NULL: break
+       temp_holder = temp_lock.holder
+   ```
+   Yani: her adımda mevcut kilidin `max_priority`'si yükseltilir, kilit
+   sahibinin etkili önceliği yeniden hesaplanır; sahibin kendisi de bir
+   kilit üzerinde bekliyorsa (`current_lock != NULL`) zincir takip
+   edilir. Sahip READY ise sırasını koruyabilmek için `ready_list`'te
+   yeri güncellenir. Döngü temp_lock'un `max_priority`'si zaten bağış
+   miktarından yüksek veya eşit olduğunda kendiliğinden sonlanır
+   (gereksiz iş yapılmaz).
+3. Kesmeler açılır. `sema_down(&L.semaphore)` ile bloklan; aslında
+   bağışı alan T_h sayesinde T_h hızlıca koşar, L'yi serbest bırakır
+   ve T_cur uyandırılır.
+4. Uyandıktan sonra `current_lock = NULL`, L `locks_held`'e eklenir,
+   `L.holder = T_cur`, ardından `lock_update_priority(L)` + tekrar
+   `thread_update_priority(T_cur)`.
+
+İç içe bağış adım 2'deki `while` döngüsü ile doğal olarak ele alınır;
+zincir, sahibi başka bir kilit beklemeyen ilk thread'e ulaşana kadar
+yayılır.
+
+>> B5: lock_release() fonksiyonu, yüksek öncelikli bir iş parçacığının beklediği bir kilit üzerinde çağrıldığında olaylar sırasını açıklayın.
+
+`lock_release(L)` (`T_cur = L.holder`):
+
+1. Kesmeler kapatılır; `L`, `T_cur.locks_held` listesinden çıkarılır.
+   Kesmeler tekrar açılır (kısa kritik bölge).
+2. mlfqs **kapalıysa** `thread_update_priority(T_cur)` çağrılır:
+   `T_cur.priority` artık `max(real_priority, kalan locks_held'in
+   max_priority'leri)` olarak hesaplanır. Bu, T_cur'a yapılmış olan
+   ve sadece L üzerinden gelen bağışı **geri alır**; başka kilit
+   üzerinden gelen bağışlar (multiple donation senaryosu) korunur.
+3. `L.holder = NULL`; `sema_up(&L.semaphore)` çağrılır. `sema_up`
+   `waiters`'tan en yüksek öncelikli thread'i bulup `thread_unblock`
+   eder. Unblock thread'i `ready_list`'e öncelik sırasıyla yerleştirir.
+4. `sema_up` sonunda `try_thread_yield()` çağrılır; eğer yeni
+   uyandırılan thread mevcut çalışandan daha öncelikli ise CPU ona
+   geçer — yani yüksek öncelikli bekleyen derhal koşmaya başlar.
+
+---- SENKRONİZASYON ----
+
+>> B6: thread_set_priority() fonksiyonunda potansiyel bir yarış koşulunu açıklayın ve uygulamanızın bunu nasıl engellediğini açıklayın. Bu yarış koşulunu engellemek için bir kilit kullanabilir misiniz?
+
+Yarış: `T_cur` `real_priority`'sini güncelliyorken aynı anda başka
+bir thread (örn. `lock_acquire` yapan yüksek öncelikli bir bağışçı)
+`T_cur` üzerinde `thread_update_priority` çağırabilir veya timer
+kesmesi `T_cur`'in `priority`'sini okuyup planlama kararı verebilir.
+İkisi de `priority` alanını tutarsız (yeni `real_priority` ama eski
+`locks_held` durumu) bir anda görebilir.
+
+Çözüm: `thread_set_priority` `real_priority`'yi yazıp
+`thread_update_priority`'yi çağırmadan önce `intr_disable()` ile
+kesmeleri kapatır. Tek CPU'lu Pintos'ta bu, diğer kernel thread'lerin
+ve timer kesmesinin kritik bölgeyi gözlemleyememesini garanti eder.
+Güncelleme bittikten sonra kesmeler açılır ve `try_thread_yield`
+çağrılır.
+
+**Kilit kullanılabilir mi?** Pratik olarak hayır: bu alanlar timer
+kesmesi tarafından (mlfqs `thread_update_priority_mlfqs` yolundan ve
+preemption kontrolü için) okunuyor; kesme bağlamında bir lock
+acquire edilemez (`lock_acquire` `ASSERT(!intr_context())`). Bu yüzden
+kesme devre dışı bırakma kaçınılmaz; ayrıca bağış zincirinde
+`current_lock`/`locks_held`/`priority` alanlarına atomik olarak
+bakılması gerekir, kilit bu paylaşımı koruyamaz.
+
+---- GEREKÇE ----
+
+>> B7: Bu tasarımı neden seçtiniz? Diğer düşündüğünüz tasarımlara kıyasla hangi açılardan daha üstün olduğunu düşünüyorsunuz?
+
+Alternatifler:
+
+1. **Tek alan**: thread'de yalnız `priority` (gerçek) ve bir
+   `donation` stack'i tutmak. Multiple donation desteği zor olur;
+   donation kaldırılırken hangi bağışın hangi kilitten geldiğini
+   bilmek için ek bağ gerekir.
+2. **Lock üzerinde değil, thread üzerinde donor listesi**: Her thread
+   kendisine bağış yapanların listesini tutar. Multiple donation
+   doğal ele alınır ama `lock_release`'de "bu kilitle gelenleri
+   çıkar" filtrelemesi pahalı.
+3. **Seçilen yol**: Bağış miktarını **kilidin üzerinde**
+   (`lock.max_priority`) tutmak; thread'in etkili önceliği
+   `locks_held` üzerinden hesaplanır. `lock_release`'de yalnız o
+   kilidi `locks_held`'den çıkarmak yeter, bağış otomatik kalkar.
+   Multiple donation O(|locks_held|), nested donation
+   `current_lock` zinciri ile lineer.
+
+Hazır kuyruğu için sıralı liste (vs. her seferinde `list_max`)
+seçildi çünkü `try_thread_yield` ve `schedule` çok daha sık çağrılır;
+eklemenin O(n) maliyeti, çıkarmanın O(1) olmasıyla telafi edilir.
+Tersine semafor `waiters`'ında donation listeyi sürekli sıralı
+tutmayı zorlaştırır, bu yüzden orada `list_max` (anlık tarama)
+kullanıldı.
+
+
+              GELİŞMİŞ PLANLAMA
+              ==================
+
+---- VERİ YAPILARI ----
+
+>> C1: Her yeni veya değiştirilen `struct` veya `struct` üyesi, global veya statik değişken, `typedef` veya enumerasyonun beyanını buraya kopyalayın. Her birinin amacını 25 kelime veya daha az bir şekilde tanımlayın.
+
+`threads/thread.h` — `struct thread` içine eklenenler:
+
+```c
+int nice;                     /* 4.4BSD nice değeri; pozitif=daha cömert,
+                                 negatif=daha bencil. */
+fixed_t recent_cpu;           /* Son zamanda kullanılan CPU miktarı
+                                 (17.15 sabit nokta); priority hesabında
+                                 ceza terimi. */
+```
+
+`threads/thread.c` — yeni statik global:
+
+```c
+static fixed_t load_avg;      /* Çalışmaya hazır thread sayısının üstel
+                                 hareketli ortalaması (17.15 sabit nokta);
+                                 thread_get_load_avg 100*round değerini
+                                 döndürür. */
+```
+
+`threads/fixed_point.h` — yeni dosya, 17.15 sabit nokta makroları:
+
+```c
+typedef int fixed_t;          /* 32-bit imzalı; en düşük 15 bit kesir. */
+#define FP_SHIFT_AMOUNT 15
+#define FP_CONST(A)            ((fixed_t)((A) << FP_SHIFT_AMOUNT))
+#define FP_ADD(A,B)            ((A) + (B))
+#define FP_ADD_MIX(A,B)        ((A) + ((B) << FP_SHIFT_AMOUNT))
+#define FP_SUB(A,B)            ((A) - (B))
+#define FP_SUB_MIX(A,B)        ((A) - ((B) << FP_SHIFT_AMOUNT))
+#define FP_MULT_MIX(A,B)       ((A) * (B))
+#define FP_DIV_MIX(A,B)        ((A) / (B))
+#define FP_MULT(A,B)           ((fixed_t)(((int64_t)(A)) * (B) >> FP_SHIFT_AMOUNT))
+#define FP_DIV(A,B)            ((fixed_t)((((int64_t)(A)) << FP_SHIFT_AMOUNT) / (B)))
+#define FP_INT_PART(A)         ((A) >> FP_SHIFT_AMOUNT)
+#define FP_ROUND(A)            (...)   /* en yakına yuvarlar */
+```
+
+---- ALGORİTMALAR ----
+
+>> C2: A, B ve C iş parçacıklarının nice değerleri sırasıyla 0, 1 ve 2. Her birinin recent_cpu değeri 0. Aşağıdaki tabloyu doldurun ve her bir iş parçacığı için her bir zamanlayıcı tikinden sonra yapılan planlama kararını, öncelik ve recent_cpu değerlerini gösterin:
+
+Formül: `priority = PRI_MAX - (recent_cpu / 4) - (nice * 2)`,
+PRI_MAX = 63. Her tikte çalışan thread'in `recent_cpu` değeri 1
+artar. Her TIME_SLICE (= 4 tik) sınırında çalışan thread'in
+önceliği yeniden hesaplanır. Bu senaryoda 36 tik içinde 1 saniye
+(TIMER_FREQ = 100 tik) dolmadığı için `load_avg` güncellemesi ve
+diğer thread'lerin `recent_cpu` güncellemesi yapılmaz.
+
+```
+timer    recent_cpu          priority         thread
+ticks    A    B    C       A    B    C       to run
+-----   ---  ---  ---     ---  ---  ---      ------
+  0      0    0    0       63   61   59         A
+  4      4    0    0       62   61   59         A
+  8      8    0    0       61   61   59         B
+ 12      8    4    0       61   60   59         A
+ 16     12    4    0       60   60   59         B
+ 20     12    8    0       60   59   59         A
+ 24     16    8    0       59   59   59         C
+ 28     16    8    4       59   59   58         B
+ 32     16   12    4       59   58   58         A
+ 36     20   12    4       58   58   58         C
+```
+
+Tikteki "to run" sütunu, o tik sonrası planlama kararıyla bir
+sonraki dilimde koşacak thread'i gösterir.
+
+>> C3: Planlayıcı spesifikasyonundaki herhangi bir belirsizlik tablodaki değerleri belirsiz hale getirdi mi? Eğer öyleyse, bunları çözmek için hangi kuralı kullandınız? Bu, planlayıcınızın davranışıyla uyumlu mu?
+
+Evet, **eşit öncelikli thread'ler arasında seçim** belirsiz.
+Spesifikasyon "round robin" der ama hangisinin önce koşacağını
+açıkça söylemez.
+
+Uygulamadaki kural: `ready_list` `list_insert_ordered` ile
+karşılaştırma fonksiyonu `compare_threads_by_priority` (`<=`)
+kullanır; eşit öncelikli yeni eklenenler, mevcut eşit önceliklilerin
+**önüne** yerleşir. `list_pop_back` ise listedeki son (en sağdaki)
+elemanı alır. Net etkisi: eşit önceliğe sahip thread'lerden
+**ready_list'te en uzun süredir bekleyen** önce koşar (FIFO
+round-robin). Tabloda tick 8'de A=B=61 eşit; A çalışmaktayken
+yield etti ve listeye önce gelene yerleşti, böylece B back konumunda
+kaldı → B koşar. Bu davranış spesifikasyonun "round robin among
+equal priority" ifadesiyle uyumludur.
+
+>> C4: Planlamayı kod içinde ve kesme bağlamı dışında yapılan işlerin maliyeti arasında nasıl böldüğünüz, performansı nasıl etkiler?
+
+Kesme bağlamında (timer_interrupt → thread_tick):
+
+- Her tikte: mevcut thread'in `recent_cpu++`, `sleeping_list`
+  taraması, dilim sayacı kontrolü.
+- Her 4. tikte: yalnız **mevcut thread** için
+  `thread_update_priority_mlfqs` (O(1)).
+- Her saniyede (TIMER_FREQ tik = 100 tik): `load_avg` yeniden
+  hesaplanır ve `thread_foreach(thread_update_recent_cpu)` ile
+  **tüm** thread'lerin `recent_cpu` ve `priority` değerleri
+  güncellenir (O(n_all)).
+
+Kesme dışında (thread bağlamında):
+
+- `thread_set_nice` nice'i değiştirir ve önceliği günceller; ardından
+  preempt gerekirse `try_thread_yield` çağrılır.
+- `thread_get_load_avg`/`thread_get_recent_cpu` yalnız okuma yapar.
+
+Trade-off: Her tikte tüm thread'lerin önceliğini yeniden hesaplamak
+yerine yalnız çalışan thread'i güncellemek, kesme süresini sabit
+tutar. Saniyede bir kez yapılan toplu güncelleme (`load_avg` ve
+`recent_cpu`) kesme uzunluğunu kısa süreliğine artırır ama 100 tikte
+bir yapıldığı için ortalama maliyet düşüktür. Eğer her tikte tüm
+thread'lere priority güncellense, kesme bağlamında O(n) iş yapılır
+ve uzun timer kesmeleri yüzünden tik kaçırma riski doğardı.
+
+---- GEREKÇE ----
+
+>> C5: Tasarımınızı kısaca eleştirin, tasarım seçimlerinizdeki avantajları ve dezavantajları belirtin. Bu kısmı üzerinde daha fazla zaman harcayabilseydiniz, tasarımınızı nasıl geliştirmek veya iyileştirmek isterdiniz?
+
+**Güçlü yanlar**:
+
+- Kesme bağlamı sade tutuldu; saniyede bir yapılan toplu güncelleme
+  dışında her tikteki iş O(1).
+- `sleeping_list` ve `ready_list` paylaşımı için tek atomik mekanizma
+  (kesme devre dışı bırakma) kullanıldı; lock + kesme karışıklığı
+  yok.
+- Donation ve mlfqs aynı `priority`/`real_priority` alanını paylaşır;
+  ortak yollar (`try_thread_yield`, `compare_threads_by_priority`)
+  her iki modda da değişmeden çalışır.
+
+**Zayıf yanlar / iyileştirme fırsatları**:
+
+- `sleeping_list` sıralı değil; uyuyan thread sayısı büyürse her tikte
+  doğrusal tarama dezavantaja döner. Daha iyisi: priority queue veya
+  uyanma zamanı bazlı min-heap.
+- mlfqs'de saniyede bir `thread_foreach` `all_list` üzerinde O(n)
+  iterasyon yapar. Çok thread'li senaryolarda bu kesme bölgesi
+  uzayabilir; alternatif olarak `recent_cpu` güncellemesini "tembel"
+  yapıp talep edildiğinde hesaplama tasarlanabilir.
+- `lock_acquire` sonunda `thread_yield()` koşulsuz çağrılıyor; çoğu
+  zaman gereksiz bir reschedule maliyeti var. `try_thread_yield`
+  daha uygun olurdu — daha fazla zamanım olsa bunu değiştirirdim.
+
+>> C6: Görev, sabit nokta matematiği için ayrıntılı aritmetiği açıklasa da, bunu nasıl uygulayacağınız konusunda size açık bir yön bırakmaktadır. Bunu yaptığınız şekilde uygulamaya karar vermenizin nedeni nedir? Sabit nokta matematiği için bir soyutlama katmanı, yani soyut veri tipi ve/veya sabit nokta sayıları manipüle etmek için bir dizi fonksiyon veya makro oluşturduysanız, bunu neden yaptınız? Yapmadıysanız, neden yapmadınız?
+
+Sabit nokta katmanı `threads/fixed_point.h` adında ayrı bir başlık
+dosyasında, **makrolar** ve `fixed_t` (int için typedef) ile
+uygulandı. Sebepleri:
+
+- **Tip güvenliği**: `fixed_t` ile `int` ayrı isimler altında
+  görünür; bir `fixed_t` değerini yanlışlıkla `int` aritmetiğine
+  sokmak okuyucu için hemen göze çarpar. (C derleyicisi
+  zorunlu kontrol yapmasa da kod okurlu olur.)
+- **Tek nokta değişim**: `FP_SHIFT_AMOUNT` veya yuvarlama davranışı
+  tek yerden değişir; `thread.c`'de yayılmış shift/cast'lar olmaz.
+- **`int64_t` taşması yönetimi**: `FP_MULT` ve `FP_DIV` makroları
+  içten `int64_t`'a yükseltip sonra shift yapar; bu, çağıran kodun
+  hem temizlenmesini hem de taşma riskinin tek yerde ele
+  alınmasını sağlar.
+- **Fonksiyon yerine makro** tercih edildi çünkü i386 hedefinde
+  inline'lanmayan basit aritmetik fonksiyon çağrı maliyeti
+  istemiyoruz; makrolar derleme zamanında genişler.
+
+Olası dezavantaj: makrolar argümanları birden fazla değerlendirir
+(`FP_ADD_MIX(A, x++)` gibi yan etkili kullanım hataya yol açabilir);
+ancak bu dosya tek bir çekirdek modülünde, kontrollü şekilde
+kullanılıyor.

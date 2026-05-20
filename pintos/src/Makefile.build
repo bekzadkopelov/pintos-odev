@@ -90,6 +90,7 @@ threads/loader.o: threads/loader.S
 
 loader.bin: threads/loader.o
 	$(LD) -N -e 0 -Ttext 0x7c00 --oformat binary -o $@ $<
+	truncate -s 512 $@
 
 os.dsk: kernel.bin
 	cat $^ > $@
